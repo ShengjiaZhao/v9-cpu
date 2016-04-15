@@ -3,7 +3,7 @@
 //
 #include <u.h>
 #include <lab.h>
-#include <lab_ui.h>
+#include <lab_stdout.h>
 
 char *mem_free;          // memory free list
 char *mem_top;           // current top of unused memory

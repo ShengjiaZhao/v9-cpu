@@ -4,7 +4,7 @@
 
 #include <u.h>
 #include <lab.h>
-#include <lab_ui.h>
+#include <lab_stdout.h>
 
 uint ticks = 0;
 char *mem_top;           // current top of unused memory
