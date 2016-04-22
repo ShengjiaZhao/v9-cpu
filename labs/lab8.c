@@ -1794,6 +1794,66 @@ sleep(void *chan)
   u->chan = 0;
 }
 
+/**************** Semaphore ********************/
+
+struct semaphore_t {
+  int value;
+  struct proc *(p[20]);
+  int wait_proc;
+};
+
+struct semaphore_t *sem_init(int value) {
+  struct semaphore_t *sem = kalloc();   // Fixme, this leads to a memory leak
+  memset(sem, 0, sizeof(struct semaphore_t));
+  //printf("Initializing semaphore @ %x to %d\n", (uint)sem, value);
+  sem->value = value;
+  return sem;
+}
+
+void sem_up(struct semaphore_t *sem) {
+  int e = splhi(), i;
+  //printf("Up sem @ %d\n", (uint)sem);
+
+  if (sem->wait_proc == 0)
+    sem->value++;
+  else {
+    for (i = 0; i < 20; i++) {
+      if (sem->p[i] != 0) {
+        sem->p[i]->state = RUNNABLE;
+        sem->p[i] = 0;
+        splx(e);
+        return;
+      }
+    }
+    panic("Semaphore: cannot find waiting process");
+  }
+  splx(e);
+}
+
+void sem_down(struct semaphore_t *sem) {
+  int e = splhi(), i;
+  //printf("Down sem @ %d with value %d\n", (uint)sem, sem->value);
+
+  if (sem->value > 0) {
+    sem->value--;
+    splx(e);
+  }
+  else {
+    for (i = 0; i < 20; i++) {
+      if (sem->p[i] == 0) {
+        sem->p[i] = u;
+        sem->wait_proc++;
+        u->state = SLEEPING;
+        splx(e);
+        sched();
+        return;
+      }
+    }
+    panic("No more sem slot available");
+  }
+}
+
+
 // wake up all processes sleeping on chan
 wakeup(void *chan)
 {
@@ -2090,6 +2150,9 @@ trap(uint *sp, double g, double f, int c, int b, int a, int fc, uint *pc)
     case S_poll:    a = poll(a, b, c); break;
     case S_accept:  a = accept(a, b, c); break;
     case S_connect: a = connect(a, b, c); break;
+    case S_sem:     a = sem_init(a); break;
+    case S_semup:   a = sem_up(a); break;
+    case S_semdown: a = sem_down(a); break;
     default: printf("pid:%d name:%s unknown syscall %d\n", u->pid, u->name, a); a = -1; break;
     }
     if (u->killed) exit(-1);

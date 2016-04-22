@@ -611,7 +611,7 @@ void sem_down(struct semaphore_t *sem) {
     panic("No more sem slot available");
   }
 }
-//bool try_down(semaphore_t *sem);
+
 /************************************************/
 
 void trap(uint *sp, double g, double f, int c, int b, int a, int fc, uint *pc)
