@@ -45,6 +45,33 @@ void kfree(char *v)
   splx(e);
 }
 
+// return the address of the PTE in page table pd that corresponds to virtual address va
+uint *walkpdir(uint *pd, uint va) {
+  uint *pde = &pd[va >> 22], *pt;
+
+  if (!(*pde & PTE_P)) return 0;
+  pt = P2V+(*pde & -PAGE);
+  return &pt[(va >> 12) & 0x3ff];
+}
+
+// create PTE for a page
+void mappage(uint *pd, uint va, uint pa, int perm)
+{
+  uint *pde, *pte, *pt;
+  if (*(pde = &pd[va >> 22]) & PTE_P)
+    pt = P2V+(*pde & -PAGE);
+  else
+    *pde = (V2P+(uint)(pt = memset(kalloc(), 0, PAGE))) | PTE_P | PTE_W | PTE_U;
+  pte = &pt[(va >> 12) & 0x3ff];
+  if (*pte & PTE_P) {
+    printf("*pte=0x%x pd=0x%x va=0x%x pa=0x%x perm=0x%x", *pte, pd, va, pa, perm);
+    panic("remap");
+  }
+  *pte = pa | perm;
+}
+
+
+
 // set up kernel page table: allocate enough page tables for all mem_sz bytes of memory
 // and build kernel virtual address to physical address translation
 void setupkvm()
