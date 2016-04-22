@@ -1,11 +1,9 @@
-//
-// Created by shengjia on 4/16/16.
-//
-
-
+// os.c - based on xv6 with heavy modifications
 #include <u.h>
 #include <lab.h>
+#include <lab_utils.h>
 #include <lab_stdout.h>
+// *** Globals ***
 
 struct proc proc[NPROC];
 struct proc *u;          // current process
@@ -14,12 +12,41 @@ char *mem_free;          // memory free list
 char *mem_top;           // current top of unused memory
 uint mem_sz;             // size of physical memory
 uint kreserved;          // start of kernel reserved memory heap
+struct devsw devsw[NDEV];
 uint *kpdir;             // kernel page directory
 uint ticks;
-char *memdisk;
 int nextpid;
 
-void panic(char *s)
+
+// Allocate a user program area that begins with a magic string
+char user_program[8192] = {'u', 's', 'e', 'r', 'p', 'r', 'o', 'g', 'r', 'a', 'm',
+                           0x92, 0x23, 0x46, 0x88, 0xA6, 0xE5, 0x77, 0x02};
+
+// *** Code ***
+
+
+// page allocator
+char *kalloc()
+{
+  char *r; int e = splhi();
+  if (r = mem_free) mem_free = *(char **)r;
+  else if ((uint)(r = mem_top) < P2V+(mem_sz - FSSIZE)) mem_top += PAGE; //XXX uint issue is going to be a problem with other pointer compares!
+  else panic("kalloc failure!");  //XXX need to sleep here!
+  splx(e);
+  return r;
+}
+
+kfree(char *v)
+{
+  int e = splhi();
+  if ((uint)v % PAGE || v < (char *)(P2V+kreserved) || (uint)v >= P2V+(mem_sz - FSSIZE)) panic("kfree");
+  *(char **)v = mem_free;
+  mem_free = v;
+  splx(e);
+}
+
+
+panic(char *s)
 {
   asm(CLI);
   out(1,'p'); out(1,'a'); out(1,'n'); out(1,'i'); out(1,'c'); out(1,':'); out(1,' ');
@@ -28,31 +55,60 @@ void panic(char *s)
   asm(HALT);
 }
 
-// page allocator
-char *kalloc()
+// *** syscalls ***
+int svalid(uint s) { return (s < u->sz) && memchr(s, 0, u->sz - s); }
+int mvalid(uint a, int n) { return a <= u->sz && a+n <= u->sz; }
+
+int write(int fd, char *addr, int n)
 {
-  char *r; int e = splhi();
-  if (r = mem_free)
-    mem_free = *(char **)r;   // If there is an item in free page list, use it
-  else if ((uint)(r = mem_top) < P2V+(mem_sz - FSSIZE))
-    mem_top += PAGE;          // Otherwise increment mem_top to allocate a new page
-  else panic("kalloc failure!");  //XXX need to sleep here!
-  splx(e);
-  return r;
+  printf("%s", addr);
+  return n;
 }
 
-// free a page
-void kfree(char *v)
-{
-  int e = splhi();
-  if ((uint)v % PAGE || v < (char *)(P2V+kreserved) || (uint)v >= P2V+(mem_sz - FSSIZE))
-    panic("kfree");
-  *(char **)v = mem_free;
-  mem_free = v;
-  splx(e);
+
+
+void yield() {
+  u->state = RUNNABLE;
+  sched();
 }
 
-// a forked child's very first scheduling will switch here
+
+
+int ssleep(int n)
+{
+  uint ticks0; int e = splhi();
+
+  ticks0 = ticks;
+  while (ticks - ticks0 < n) {
+    if (u->killed) {
+      splx(e);
+      return -1;
+    }
+    sleep(&ticks);
+  }
+  splx(e);
+  return 0;
+}
+
+// sleep on channel
+sleep(void *chan)
+{
+  u->chan = chan;
+  u->state = SLEEPING;
+  sched();
+  // tidy up
+  u->chan = 0;
+}
+
+// wake up all processes sleeping on chan
+wakeup(void *chan)
+{
+  struct proc *p;
+  for (p = proc; p < &proc[NPROC]; p++)
+    if (p->state == SLEEPING && p->chan == chan) p->state = RUNNABLE;
+}
+
+// a forked child's very first scheduling will swtch here
 forkret()
 {
   asm(POPA); asm(SUSP);
@@ -72,7 +128,6 @@ struct proc *allocproc()
 
   for (p = proc; p < &proc[NPROC]; p++)
     if (p->state == UNUSED) goto found;
-  printf("Warning: allocproc failed because NPROC limit reached");
   splx(e);
   return 0;
 
@@ -93,8 +148,56 @@ struct proc *allocproc()
   return p;
 }
 
-// create PTE for a page to map va to pa with perm as status flags
-// if the PT do not exist, create it.
+
+void kthread_example() {
+  printf("Hello world from process %d\n", u->pid);
+  while(1) {
+    sched();
+  }
+}
+
+fork_kthread(void *entry)
+{
+  char *mem;
+  init = allocproc();
+  init->pdir = memcpy(kalloc(), kpdir, PAGE);
+
+  init->sz = PAGE;
+  init->tf->sp = kalloc() + PAGE;
+  init->tf->fc = 0;
+  init->tf->pc = entry;
+  safestrcpy(init->name, "kthread", sizeof(init->name));
+  init->state = RUNNABLE;
+}
+
+// set up kernel page table
+setupkvm()
+{
+  uint i, *pde, *pt;
+
+  kpdir = memset(kalloc(), 0, PAGE); // kalloc returns physical addresses here (kfree wont work until later on)
+
+  for (i=0; i<mem_sz; i += PAGE) {
+    pde = &kpdir[(P2V+i) >> 22];
+    if (*pde & PTE_P)
+      pt = *pde & -PAGE;
+    else
+      *pde = (uint)(pt = memset(kalloc(), 0, PAGE)) | PTE_P | PTE_W;
+    pt[((P2V+i) >> 12) & 0x3ff] = i | PTE_P | PTE_W;
+  }
+}
+
+// return the address of the PTE in page table pd that corresponds to virtual address va
+uint *walkpdir(uint *pd, uint va)
+{
+  uint *pde = &pd[va >> 22], *pt;
+
+  if (!(*pde & PTE_P)) return 0;
+  pt = P2V+(*pde & -PAGE);
+  return &pt[(va >> 12) & 0x3ff];
+}
+
+// create PTE for a page
 void mappage(uint *pd, uint va, uint pa, int perm)
 {
   uint *pde, *pte, *pt;
@@ -110,44 +213,9 @@ void mappage(uint *pd, uint va, uint pa, int perm)
   *pte = pa | perm;
 }
 
-// hand-craft the first process
-void init_start()
-{
-  char cmd[10], *argv[2];
 
-  // no data/bss segment
-  cmd[0] = '/'; cmd[1] = 'e'; cmd[2] = 't'; cmd[3] = 'c'; cmd[4] = '/';
-  cmd[5] = 'i'; cmd[6] = 'n'; cmd[7] = 'i'; cmd[8] = 't'; cmd[9] = 0;
 
-  argv[0] = cmd;
-  argv[1] = 0;
-
-  printf("Executing the first thread");
-  while(1);
-  //if (!init_fork()) init_exec(cmd, argv);
-  //init_exit(0); // become the idle task
-}
-
-void userinit()
-{
-  char *mem;
-  init = allocproc();
-  init->pdir = memcpy(kalloc(), kpdir, PAGE);
-  // copy the code of the process function to a new memory page
-  mem = memcpy(memset(kalloc(), 0, PAGE), (char *)init_start, (uint)userinit - (uint)init_start);
-  // map virtual address 0 of the process page table to physical address of the memory page
-  mappage(init->pdir, 0, V2P+mem, PTE_P | PTE_W | PTE_U);
-
-  init->sz = PAGE;
-  init->tf->sp = PAGE;
-  init->tf->fc = USER;
-  init->tf->pc = 0;
-  safestrcpy(init->name, "initcode", sizeof(init->name));
-  init->cwd = namei("/");
-  init->state = RUNNABLE;
-}
-
-void swtch(int *old, int new) // switch stacks
+swtch(int *old, int new) // switch stacks
 {
   asm(LEA,0); // a = sp
   asm(LBL,8); // b = old
@@ -156,7 +224,7 @@ void swtch(int *old, int new) // switch stacks
   asm(SSP);   // sp = a
 }
 
-void scheduler()
+scheduler()
 {
   int n;
 
@@ -172,12 +240,12 @@ void scheduler()
   panic("scheduler returned!\n");
 }
 
-void sched() // XXX redesign this better
+sched() // XXX redesign this better
 {
-  int n; struct proc *p;
+  int n;
+  struct proc *p;
   p = u;
-
-  for (n=0;n<NPROC;n++) {
+  for (n = 0; n < NPROC; n++) {
     u = u->next;
     if (u == &proc[0]) continue;
     if (u->state == RUNNABLE) goto found;
@@ -187,10 +255,9 @@ void sched() // XXX redesign this better
   found:
   u->state = RUNNING;
   if (p != u) {
-    pdir(V2P+(uint)(u->pdir));
+    pdir(V2P + (uint) (u->pdir));
     swtch(&p->context, u->context);
   }
-  //else printf("spin(%d)\n",u->pid);    XXX else do a wait for interrupt? (which will actually pend because interrupts are turned off here)
 }
 
 void trap(uint *sp, double g, double f, int c, int b, int a, int fc, uint *pc)
@@ -199,29 +266,31 @@ void trap(uint *sp, double g, double f, int c, int b, int a, int fc, uint *pc)
   switch (fc) {
     case FSYS: panic("FSYS from kernel");
     case FSYS + USER:
-      panic("No implementation of syscall yet");
+      printf("Haven't implemented syscall yet");
+      return;
+
+    case FMEM:          panic("FMEM from kernel");
+    case FPRIV:         panic("FPRIV from kernel");
+    case FINST:         panic("FINST from kernel");
+    case FARITH:        panic("FARITH from kernel");
+    case FIPAGE:        printf("FIPAGE from kernel [0x%x]", lvadr()); panic("!\n");
+    case FWPAGE:
+    case FRPAGE:        // XXX
+      if ((va = lvadr()) >= u->sz) panic("Address out of bounds");
+      pc--; // printf("fault"); // restart instruction
+      mappage(u->pdir, va & -PAGE, V2P+(memset(kalloc(), 0, PAGE)), PTE_P | PTE_W | PTE_U);
+      return;
+
     case FTIMER:
     case FTIMER + USER:
       ticks++;
       wakeup(&ticks);
-
-      // force process exit if it has been killed and is in user space
-      if (u->killed && (fc & USER)) exit(-1);
-
-      // force process to give up CPU on clock tick
-      if (u->state != RUNNING) { printf("pid=%d state=%d\n", u->pid, u->state); panic("!\n"); }
-      u->state = RUNNABLE;
-      sched();
-
-      if (u->killed && (fc & USER)) exit(-1);
       return;
-
   }
 }
 
 alltraps()
 {
-  // Push all the parameters into the stack to simulate a cdecl function call
   asm(PSHA);
   asm(PSHB);
   asm(PSHC);
@@ -240,22 +309,22 @@ alltraps()
 
 mainc()
 {
+  int i;
   kpdir[0] = 0;          // don't need low map anymore
-  //consoleinit();         // console device
   ivec(alltraps);        // trap vector
-  //binit();               // buffer cache
-  //ideinit();             // disk
   stmr(128*1024);        // set timer
-  userinit();            // first user process
+  for (i = 0; i < 10; i++) {
+    fork_kthread(kthread_example);
+  }
   printf("Welcome!\n");
   scheduler();           // start running processes
 }
 
 main()
 {
-  int *ksp;                 // temp kernel stack pointer
-  static char kstack[256];  // temp kernel stack
-  static int endbss;        // last variable in bss segment
+  int *ksp;              // temp kernel stack pointer
+  static char kstack[256]; // temp kernel stack
+  static int endbss;     // last variable in bss segment
 
   // initialize memory allocation
   mem_top = kreserved = ((uint)&endbss + PAGE + 3) & -PAGE;
@@ -282,7 +351,4 @@ main()
   asm(LL, 4);
   asm(SSP);
   asm(LEV);
-  // Note that since all addressing in v9 is w.r.t. PC or SP,
-  // moving PC and SP to high addresses automatically move all references to that address
-  // therefore we do not need to explicitly relocate the code
 }

@@ -552,7 +552,7 @@ found:
   }
 }
 
-trap(uint *sp, double g, double f, int c, int b, int a, int fc, uint *pc)  
+void trap(uint *sp, double g, double f, int c, int b, int a, int fc, uint *pc)
 {
   uint va;
   switch (fc) {

@@ -17,7 +17,6 @@ uint *kpdir;             // kernel page directory
 uint ticks;
 int nextpid;
 
-
 // Allocate a user program area that begins with a magic string
 char user_program[8192] = {'u', 's', 'e', 'r', 'p', 'r', 'o', 'g', 'r', 'a', 'm',
                            0x92, 0x23, 0x46, 0x88, 0xA6, 0xE5, 0x77, 0x02};
@@ -61,6 +60,7 @@ int mvalid(uint a, int n) { return a <= u->sz && a+n <= u->sz; }
 
 int write(int fd, char *addr, int n)
 {
+  int r, h[2]; struct file *f;
   printf("%s", addr);
   return n;
 }
@@ -171,8 +171,8 @@ exit(int rc)
   struct proc *p; int fd;
 
 //  printf("exit(%d)\n",rc); // XXX do something with return code
-  if (u->pid == 0) { for (;;) sched(); } // spin in the arms of the kernel (cant be paged out)
-  //else if (u->pid == 1) panic("exit() init exiting"); // XXX reboot after all processes go away?
+  if (u->pid == 0) { for (;;) asm(IDLE); } // spin in the arms of the kernel (cant be paged out)
+  // else if (u->pid == 1) panic("exit() init exiting"); // XXX reboot after all processes go away?
   asm(CLI);
 
   // parent might be sleeping in wait()
@@ -191,12 +191,6 @@ exit(int rc)
   sched();
   panic("zombie exit");
 }
-
-void yield() {
-  u->state = RUNNABLE;
-  sched();
-}
-
 
 // Kill the process with the given pid.  Process won't exit until it returns to user space (see trap()).
 int kill(int pid)
@@ -513,7 +507,6 @@ uint *copyuvm(uint *pd, uint sz)
   return d;
 }
 
-
 swtch(int *old, int new) // switch stacks
 {
   asm(LEA,0); // a = sp
@@ -559,7 +552,69 @@ found:
   }
 }
 
-trap(uint *sp, double g, double f, int c, int b, int a, int fc, uint *pc)  
+
+/**************** Semaphore ********************/
+
+struct semaphore_t {
+  int value;
+  struct proc *(p[20]);
+  int wait_proc;
+};
+
+struct semaphore_t *sem_init(int value) {
+  struct semaphore_t *sem = kalloc();   // Fixme, this leads to a memory leak
+  memset(sem, 0, sizeof(struct semaphore_t));
+  //printf("Initializing semaphore @ %x to %d\n", (uint)sem, value);
+  sem->value = value;
+  return sem;
+}
+
+void sem_up(struct semaphore_t *sem) {
+  int e = splhi(), i;
+  //printf("Up sem @ %d\n", (uint)sem);
+
+  if (sem->wait_proc == 0)
+    sem->value++;
+  else {
+    for (i = 0; i < 20; i++) {
+      if (sem->p[i] != 0) {
+        sem->p[i]->state = RUNNABLE;
+        sem->p[i] = 0;
+        splx(e);
+        return;
+      }
+    }
+    panic("Semaphore: cannot find waiting process");
+  }
+  splx(e);
+}
+
+void sem_down(struct semaphore_t *sem) {
+  int e = splhi(), i;
+  //printf("Down sem @ %d with value %d\n", (uint)sem, sem->value);
+
+  if (sem->value > 0) {
+    sem->value--;
+    splx(e);
+  }
+  else {
+    for (i = 0; i < 20; i++) {
+      if (sem->p[i] == 0) {
+        sem->p[i] = u;
+        sem->wait_proc++;
+        u->state = SLEEPING;
+        splx(e);
+        sched();
+        return;
+      }
+    }
+    panic("No more sem slot available");
+  }
+}
+//bool try_down(semaphore_t *sem);
+/************************************************/
+
+void trap(uint *sp, double g, double f, int c, int b, int a, int fc, uint *pc)
 {
   uint va;
   switch (fc) {
@@ -577,7 +632,9 @@ trap(uint *sp, double g, double f, int c, int b, int a, int fc, uint *pc)
     case S_getpid:  a = u->pid; break;
     case S_sbrk:    a = sbrk(a); break;
     case S_sleep:   a = ssleep(a); break;
-    case S_yield:   a = yield(); break;
+    case S_sem:     a = sem_init(a); break;
+    case S_semup:   a = sem_up(a); break;
+    case S_semdown: a = sem_down(a); break;
     default: printf("pid:%d name:%s unknown syscall %d\n", u->pid, u->name, a); a = -1; break;
     }
     if (u->killed) exit(-1);
@@ -608,6 +665,13 @@ trap(uint *sp, double g, double f, int c, int b, int a, int fc, uint *pc)
     wakeup(&ticks);
 
     // force process exit if it has been killed and is in user space
+    if (u->killed && (fc & USER)) exit(-1);
+ 
+    // force process to give up CPU on clock tick
+    if (u->state != RUNNING) { return; }
+    u->state = RUNNABLE;
+    sched();
+
     if (u->killed && (fc & USER)) exit(-1);
     return;
   }

@@ -71,6 +71,14 @@ void trap(uint *sp, double g, double f, int c, int b, int a, int fc, uint *pc) {
     case FSYS + USER:
       printf("Haven't implemented syscall yet");
       return;
+    case FWPAGE:
+    case FWPAGE + USER:
+    case FRPAGE:        // XXX
+    case FRPAGE + USER: // XXX
+      if ((va = lvadr()) >= u->sz) exit(-1);
+      pc--; // restart instruction
+      mappage(u->pdir, va & -PAGE, V2P+(memset(kalloc(), 0, PAGE)), PTE_P | PTE_W | PTE_U);
+      return;
     case FTIMER:
     case FTIMER + USER:
       ticks++;
