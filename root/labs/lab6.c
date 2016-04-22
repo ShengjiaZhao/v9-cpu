@@ -15,15 +15,7 @@ uint kreserved;          // start of kernel reserved memory heap
 struct devsw devsw[NDEV];
 uint *kpdir;             // kernel page directory
 uint ticks;
-char *memdisk;
-struct input_s input;    // XXX do this some other way?
-struct buf bcache[NBUF];
-struct buf bfreelist;    // linked list of all buffers, through prev/next.   bfreelist.next is most recently used
-struct inode inode[NINODE]; // inode cache XXX make dynamic and eventually power of 2, look into iget()
-struct file file[NFILE];
 int nextpid;
-
-rfsd = -1; // XXX will be set on mount, XXX total redesign?
 
 // Allocate a user program area that begins with a magic string
 char user_program[8192] = {'u', 's', 'e', 'r', 'p', 'r', 'o', 'g', 'r', 'a', 'm',
@@ -180,7 +172,7 @@ exit(int rc)
 
 //  printf("exit(%d)\n",rc); // XXX do something with return code
   if (u->pid == 0) { for (;;) asm(IDLE); } // spin in the arms of the kernel (cant be paged out)
-  else if (u->pid == 1) panic("exit() init exiting"); // XXX reboot after all processes go away?
+  // else if (u->pid == 1) panic("exit() init exiting"); // XXX reboot after all processes go away?
   asm(CLI);
 
   // parent might be sleeping in wait()
