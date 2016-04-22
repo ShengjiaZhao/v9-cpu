@@ -3,8 +3,6 @@ void cout(char c)
   out(1, c);
 }
 
-
-
 void printn(int n)
 {
   if (n > 9) { printn(n / 10); n %= 10; }

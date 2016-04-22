@@ -54,6 +54,7 @@ struct buf {
 //  struct buf *qnext;     // disk queue XXX
   uchar *data;
 };
+
 enum { B_BUSY  = 1,      // buffer is locked by some process
   B_VALID = 2,      // buffer has been read from disk
   B_DIRTY = 4};     // buffer needs to be written to disk
@@ -181,6 +182,3 @@ spage(val)      { asm(LL,8); asm(SPAG); }
 splhi()         { asm(CLI); }
 splx(int e)     { if (e) asm(STI); }
 
-void *memcpy(void *d, void *s, uint n) { asm(LL,8); asm(LBL, 16); asm(LCL,24); asm(MCPY); asm(LL,8); }
-void *memset(void *d, uint c,  uint n) { asm(LL,8); asm(LBLB,16); asm(LCL,24); asm(MSET); asm(LL,8); }
-void *memchr(void *s, uint c,  uint n) { asm(LL,8); asm(LBLB,16); asm(LCL,24); asm(MCHR); }
