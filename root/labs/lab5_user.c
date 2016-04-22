@@ -1,10 +1,25 @@
 #include <u.h>
 #include <libc.h>
-//#include <lab_stdout.h>
 
 int main(int argc, char *argv[]) {
-  //cout('c');
-  printf("Hello world, this is a user program\n");
 
+  int i;
+  printf("Hello world, this is a user program %d\n", getpid());
+
+  fork();
+  printf("Forking: my pid is %d\n", getpid());
+  fork();
+  printf("Forking: my pid is %d\n", getpid());
+  fork();
+  printf("Forking: my pid is %d\n", getpid());
+
+  if (getpid() == 1)
+    return 0;
+
+  while(1) {
+    printf("Msg from process %d\n", getpid());
+    for (i = 0; i < 20000000; i++);
+    yield();
+  }
   return 0;
 }

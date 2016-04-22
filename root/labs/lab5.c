@@ -68,7 +68,6 @@ int mvalid(uint a, int n) { return a <= u->sz && a+n <= u->sz; }
 
 int write(int fd, char *addr, int n)
 {
-  int r, h[2]; struct file *f;
   printf("%s", addr);
   return n;
 }
@@ -179,8 +178,8 @@ exit(int rc)
   struct proc *p; int fd;
 
 //  printf("exit(%d)\n",rc); // XXX do something with return code
-  if (u->pid == 0) { for (;;) asm(IDLE); } // spin in the arms of the kernel (cant be paged out)
-  else if (u->pid == 1) panic("exit() init exiting"); // XXX reboot after all processes go away?
+  if (u->pid == 0) { for (;;) sched(); } // spin in the arms of the kernel (cant be paged out)
+  //else if (u->pid == 1) panic("exit() init exiting"); // XXX reboot after all processes go away?
   asm(CLI);
 
   // parent might be sleeping in wait()
@@ -199,6 +198,12 @@ exit(int rc)
   sched();
   panic("zombie exit");
 }
+
+void yield() {
+  u->state = RUNNABLE;
+  sched();
+}
+
 
 // Kill the process with the given pid.  Process won't exit until it returns to user space (see trap()).
 int kill(int pid)
@@ -515,6 +520,7 @@ uint *copyuvm(uint *pd, uint sz)
   return d;
 }
 
+
 swtch(int *old, int new) // switch stacks
 {
   asm(LEA,0); // a = sp
@@ -542,27 +548,22 @@ scheduler()
 
 sched() // XXX redesign this better
 {
-  int n; struct proc *p;
-//  if (u->state == RUNNING) panic("sched running");
-//  if (lien()) panic("sched interruptible");
+  int n;
+  struct proc *p;
   p = u;
-//  while (u->state != RUNNABLE) u = u->next;
-  for (n=0;n<NPROC;n++) {
+  for (n = 0; n < NPROC; n++) {
     u = u->next;
     if (u == &proc[0]) continue;
     if (u->state == RUNNABLE) goto found;
   }
   u = &proc[0];
-  //printf("-");
-  
+
 found:
   u->state = RUNNING;
   if (p != u) {
-    pdir(V2P+(uint)(u->pdir));
-    //printf("+");
+    pdir(V2P + (uint) (u->pdir));
     swtch(&p->context, u->context);
   }
-  //else printf("spin(%d)\n",u->pid);    XXX else do a wait for interrupt? (which will actually pend because interrupts are turned off here)
 }
 
 trap(uint *sp, double g, double f, int c, int b, int a, int fc, uint *pc)  
@@ -583,6 +584,7 @@ trap(uint *sp, double g, double f, int c, int b, int a, int fc, uint *pc)
     case S_getpid:  a = u->pid; break;
     case S_sbrk:    a = sbrk(a); break;
     case S_sleep:   a = ssleep(a); break;
+    case S_yield:   a = yield(); break;
     default: printf("pid:%d name:%s unknown syscall %d\n", u->pid, u->name, a); a = -1; break;
     }
     if (u->killed) exit(-1);
@@ -613,13 +615,6 @@ trap(uint *sp, double g, double f, int c, int b, int a, int fc, uint *pc)
     wakeup(&ticks);
 
     // force process exit if it has been killed and is in user space
-    if (u->killed && (fc & USER)) exit(-1);
- 
-    // force process to give up CPU on clock tick
-    if (u->state != RUNNING) { printf("pid=%d state=%d\n", u->pid, u->state); panic("!\n"); }        
-    u->state = RUNNABLE;
-    sched();
-
     if (u->killed && (fc & USER)) exit(-1);
     return;
   }
