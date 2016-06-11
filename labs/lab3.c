@@ -5,6 +5,7 @@
 #include <u.h>
 #include <lab.h>
 #include <lab_stdout.h>
+#include <lab_utils.h>
 
 char *mem_free;          // memory free list
 char *mem_top;           // current top of unused memory
@@ -46,6 +47,22 @@ void kfree(char *v)
   splx(e);
 }
 
+// create PTE for a page
+void mappage(uint *pd, uint va, uint pa, int perm)
+{
+  uint *pde, *pte, *pt;
+  if (*(pde = &pd[va >> 22]) & PTE_P)
+    pt = P2V+(*pde & -PAGE);
+  else
+    *pde = (V2P+(uint)(pt = memset(kalloc(), 0, PAGE))) | PTE_P | PTE_W | PTE_U;
+  pte = &pt[(va >> 12) & 0x3ff];
+  if (*pte & PTE_P) {
+    printf("*pte=0x%x pd=0x%x va=0x%x pa=0x%x perm=0x%x", *pte, pd, va, pa, perm);
+    panic("remap");
+  }
+  *pte = pa | perm;
+}
+
 // set up kernel page table: allocate enough page tables for all mem_sz bytes of memory
 // and build kernel virtual address to physical address translation
 void setupkvm()
@@ -75,9 +92,9 @@ void trap(uint *sp, double g, double f, int c, int b, int a, int fc, uint *pc) {
     case FWPAGE + USER:
     case FRPAGE:        // XXX
     case FRPAGE + USER: // XXX
-      if ((va = lvadr()) >= u->sz) exit(-1);
+      # if ((va = lvadr()) >= u->sz) exit(-1);
       pc--; // restart instruction
-      mappage(u->pdir, va & -PAGE, V2P+(memset(kalloc(), 0, PAGE)), PTE_P | PTE_W | PTE_U);
+      mappage(kpdir, va & -PAGE, V2P+(memset(kalloc(), 0, PAGE)), PTE_P | PTE_W | PTE_U);
       return;
     case FTIMER:
     case FTIMER + USER:
